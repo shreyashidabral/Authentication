@@ -4,10 +4,15 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const ejs = require("ejs");
 const mongoose = require("mongoose");
+
 const encrypt = require("mongoose-encryption"); //Level 2 authentication  --encrypting pass
 const md5 = require("md5"); //Level 3 authentication  --hashing pass
 const bcrypt = require("bcrypt"); //Level 4 authentication  --salting and hashing pass
-const saltRounds = 10;
+// const saltRounds = 10;
+
+const session = require("express-session");
+const passport = require("passport");
+const passportLocalMongoose = require("passport-local-mongoose");
 
 const app = express();
 
@@ -16,6 +21,15 @@ app.set('view engine', 'ejs');
 app.use(bodyParser.urlencoded({
     extended: true
 }));
+
+app.use(session({ //Setting up/configuring our session
+    secret: "Our little secret.", //any secret string to be saved in .env file
+    resave: false,
+    saveUninitialized: false
+}));
+
+app.use(passport.initialize()); //setting up or initializing passport package to start using it for authentication
+app.use(passport.session()); //using passport to set up our session
 
 // Database connection
 
@@ -27,11 +41,14 @@ const userSchema = new mongoose.Schema({
 });
 
 //Plugins : extended bits of packaged code added to mongoose schema to give them more functionality
-//fetching secretkey from .env file
-// userSchema.plugin(encrypt, {secret : process.env.SECRET, encryptedFields : ['password'] });
+userSchema.plugin(passportLocalMongoose); //used for salting, hashing and saving new users in db
 
 const User = new mongoose.model("User", userSchema);
 
+passport.use(User.createStrategy());
+
+passport.serializeUser(User.serializeUser());
+passport.deserializeUser(User.deserializeUser());
 
 // ****** Get and Post requests ********
 
@@ -45,19 +62,20 @@ app.route("/register")
     })
 
     .post(function(req, res) {
-        bcrypt.hash(req.body.password, saltRounds, function(err, hash) {
-            const newUser = new User({
-                email: req.body.username,
-                password: hash
-            })
-            newUser.save(function(err) {
-                if (!err) {
-                    res.render("secrets");
-                } else {
+            User.register({username: req.body.username}, req.body.password, function(err, user) {
+                if (err) {
                     console.log(err);
+                    res.redirect("/register");
+                } else { //if there are no errors we wlll authenticate the user
+                    passport.authenticate("local")(req, res, function() { //type of authentication - local strategy
+                        res.redirect("/secrets");
+                        //this callback will only by triggered if the authentication was succesful,
+                        //we set up a cookie, saved their current logged in session
+                        //then we can redirect them to the secrets page successfully
+                    })
                 }
-            });
-        });
+            }
+        )
     });
 
 app.route("/login")
@@ -66,24 +84,42 @@ app.route("/login")
     })
 
     .post(function(req, res) {
-        const username = req.body.username;
-        const password = req.body.password;
+        const user = new User({
+            username : req.body.username,
+            password : req.body.password
+        })
 
-        User.findOne({
-            email: username
-        }, function(err, foundUser) {
-            if (err) {
+        req.login(user, function(err){    //login method of passport
+            if(err){
                 console.log(err);
-            } else {
-                if (foundUser) {
-                    bcrypt.compare(password, foundUser.password, function(err, result) {
-                        if (result === true) {
-                            res.render("secrets");
-                        } else {
-                            console.log(err);
-                        }
-                    });
-                }
+            }else{      //if no errors - that means the user have successfully logged in and we'll authenticate the user
+                passport.authenticate("local")(req, res, function(){
+                    res.redirect("/secrets");
+                })
+            }
+        })
+    });
+
+app.route("/secrets")       //with cookies and session we can access secrets page directly when we are still logged in
+    .get(function(req, res){   //to get secrets page directly we will first check if the user is authenticated
+        if(req.isAuthenticated()){
+            res.render("secrets");
+        }else{              //if user is not authenticated redirect them to login route
+            res.redirect("login");
+        }
+    })
+
+    .post(function(req, res){
+
+    });
+
+app.route("/logout")    //deauthenticate the user and end the session
+    .get(function(req, res){
+        req.logout(function(err){
+            if(err){
+                console.log(err);
+            }else{
+                res.redirect("/");
             }
         });
     });
