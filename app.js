@@ -4,15 +4,11 @@ const express = require("express");
 const bodyParser = require("body-parser");
 const ejs = require("ejs");
 const mongoose = require("mongoose");
-
-const encrypt = require("mongoose-encryption"); //Level 2 authentication  --encrypting pass
-const md5 = require("md5"); //Level 3 authentication  --hashing pass
-const bcrypt = require("bcrypt"); //Level 4 authentication  --salting and hashing pass
-// const saltRounds = 10;
-
 const session = require("express-session");
 const passport = require("passport");
 const passportLocalMongoose = require("passport-local-mongoose");
+const GoogleStrategy = require("passport-google-oauth20").Strategy;
+const findOrCreate = require("mongoose-findorcreate")
 
 const app = express();
 
@@ -22,7 +18,7 @@ app.use(bodyParser.urlencoded({
     extended: true
 }));
 
-app.use(session({ //Setting up/configuring our session
+app.use(session({                 //Setting up/configuring our session
     secret: "Our little secret.", //any secret string to be saved in .env file
     resave: false,
     saveUninitialized: false
@@ -37,26 +33,65 @@ mongoose.connect("mongodb://localhost:27017/secretDB");
 
 const userSchema = new mongoose.Schema({
     email: String,
-    password: String
+    password: String,
+    googleId : String
 });
 
 //Plugins : extended bits of packaged code added to mongoose schema to give them more functionality
 userSchema.plugin(passportLocalMongoose); //used for salting, hashing and saving new users in db
+userSchema.plugin(findOrCreate);
 
 const User = new mongoose.model("User", userSchema);
 
 passport.use(User.createStrategy());
 
-passport.serializeUser(User.serializeUser());
-passport.deserializeUser(User.deserializeUser());
+passport.serializeUser(function(user, cb) {
+  process.nextTick(function() {
+    return cb(null, {
+      id: user.id,
+      username: user.username,
+      picture: user.picture
+    });
+  });
+});
+
+passport.deserializeUser(function(user, cb) {
+  process.nextTick(function() {
+    return cb(null, user);
+  });
+});
+
+passport.use(new GoogleStrategy({
+    clientID: process.env.GOOGLE_CLIENT_ID,
+    clientSecret: process.env.GOOGLE_CLIENT_SECRET,
+    callbackURL: "http://localhost:3000/auth/google/secrets",
+    userProfileURL: "https://www.googleapis.com/oauth2/v3/userinfo"
+  },
+  function(accessToken, refreshToken, profile, cb) {
+      console.log(profile);
+    User.findOrCreate({ googleId: profile.id }, function (err, user) {
+      return cb(err, user);
+    });
+  }
+));
 
 // ****** Get and Post requests ********
 
-app.get("/", function(req, res) {
+app.get("/", function(req, res) {    //root route or home page
     res.render("home");
 });
 
-app.route("/register")
+app.get("/auth/google",
+    passport.authenticate('google', { scope: ["profile"] })
+);
+
+app.get("/auth/google/secrets",
+    passport.authenticate('google', { failureRedirect: "/login" }),
+    function(req, res) {             // Successful authentication, redirect to any priviledged page.
+        res.redirect("/secrets");
+});
+
+app.route("/register")              //register route
     .get(function(req, res) {
         res.render("register");
     })
@@ -66,7 +101,7 @@ app.route("/register")
                 if (err) {
                     console.log(err);
                     res.redirect("/register");
-                } else { //if there are no errors we wlll authenticate the user
+                } else { //if while registering there are no errors we wlll authenticate the user
                     passport.authenticate("local")(req, res, function() { //type of authentication - local strategy
                         res.redirect("/secrets");
                         //this callback will only by triggered if the authentication was succesful,
